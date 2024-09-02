@@ -1,0 +1,361 @@
+agent_orch.py
+import asyncio
+import logging
+from typing import List, Dict, Any
+from crewai import Agent as CrewAgent
+from textwrap import dedent
+import os
+from dotenv import load_dotenv
+from utils.tasks_orch import Tasks
+from utils.tools_orch import Tool, Tools
+
+load_dotenv()
+
+# 로깅 설정
+logging.basicConfig(level=logging.DEBUG, filename='app.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s')
+
+class AgentRegistry:
+    _agents = {}
+
+    @classmethod
+    def register(cls, agent_class):
+        cls._agents[agent_class.__name__] = agent_class
+        logging.debug(f"Registered agent: {agent_class.__name__}")
+
+    @classmethod
+    def get_agent(cls, agent_name):
+        agent = cls._agents.get(agent_name)
+        logging.debug(f"Getting agent: {agent_name}, Found: {agent is not None}")
+        return agent
+
+    @classmethod
+    def get_all_agents(cls):
+        agents = list(cls._agents.keys())
+        logging.debug(f"All registered agents: {agents}")
+        return agents
+
+@AgentRegistry.register
+class NovelResearcher(CrewAgent):
+    def __init__(self):
+        super().__init__(
+            role='Novel Researcher',
+            goal='Conduct thorough research for novel writing',
+            backstory=dedent("""
+                You are an experienced researcher with a passion for literature.
+                You have a keen eye for details and a talent for uncovering
+                interesting facts and stories that can inspire novel writing.
+            """),
+            tools=[Tool(name="Internet Search", func=Tools.internet_search, description="Search the internet for information")],
+            verbose=True,
+        )
+
+    def execute_task(self, task: Any, context: Dict[str, Any] = None, **kwargs) -> str:
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(super().execute_task(task, context=context, **kwargs))
+        return str(result)
+
+@AgentRegistry.register
+class ScenarioEditor(CrewAgent):
+    def __init__(self):
+        super().__init__(
+            role='Scenario Editor',
+            goal='Develop engaging and consistent storylines',
+            backstory=dedent("""
+                You are a skilled scenario editor with years of experience in
+                creating compelling narratives. Your ability to craft complex plots
+                and develop characters is unparalleled.
+            """),
+            tools=[],
+            verbose=True,
+        )
+
+    def execute_task(self, task: Any, context: Dict[str, Any] = None, **kwargs) -> str:
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(super().execute_task(task, context=context, **kwargs))
+        return str(result)
+
+@AgentRegistry.register
+class WebtoonEditor(CrewAgent):
+    def __init__(self):
+        super().__init__(
+            role='Webtoon Editor',
+            goal='Adapt novel content into visually appealing webtoon format',
+            backstory=dedent("""
+                You are a creative webtoon editor with a strong background in visual
+                storytelling. You excel at transforming written narratives into
+                engaging visual sequences for webtoons.
+            """),
+            tools=[Tool(name="DALL-E Image Generation", func=Tools.dalle_image_generation, description="Generate images using DALL-E")],
+            verbose=True,
+        )
+
+    def execute_task(self, task: Any, context: Dict[str, Any] = None, **kwargs) -> str:
+        if not os.getenv("OPENAI_API_KEY"):
+            raise ValueError("OpenAI API key not found. Please check your environment variables.")
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(super().execute_task(task, context=context, **kwargs))
+        return str(result)
+
+tasks_orch.py
+import logging
+from crewai import Task as CrewTask
+from typing import Any, List, Optional, Dict
+
+class Task(CrewTask):
+    user_input: str
+    _dependencies: List['Task'] = []
+
+    def set_dependencies(self, dependencies: List['Task']):
+        self._dependencies = dependencies
+
+    def get_dependencies(self) -> List['Task']:
+        return self._dependencies
+
+    @property
+    def dependencies(self) -> List['Task']:
+        return self._dependencies
+
+    @dependencies.setter
+    def dependencies(self, value: List['Task']):
+        self._dependencies = value
+
+    async def execute(self, agent: Any, context: Dict[str, Any] = None, tools: List[Any] = None) -> str:
+        result = await super().execute(agent, context=context)
+        return str(result)  # 결과를 문자열로 변환
+
+class Tasks:
+    @staticmethod
+    def get_task_for_agent(agent: Any, user_input: str) -> Task:
+        task_methods = {
+            "NovelResearcher": Tasks.novel_research,
+            "ScenarioEditor": Tasks.scenario_development,
+            "WebtoonEditor": Tasks.webtoon_creation,
+        }
+        
+        task_method = task_methods.get(agent.__class__.__name__)
+        if task_method:
+            task = task_method(agent, user_input)
+            logging.debug(f"Task created for agent {agent.__class__.__name__}: {task}")
+            return task
+        else:
+            task = Task(
+                description=f"Perform the role of {agent.__class__.__name__} based on the user input.",
+                agent=agent,
+                expected_output=f"A detailed output based on the {agent.__class__.__name__}'s expertise and the given input.",
+                user_input=user_input,
+            )
+            logging.debug(f"Default task created for agent {agent.__class__.__name__}: {task}")
+            return task
+
+    @staticmethod
+    def novel_research(agent: Any, user_input: str) -> Task:
+        return Task(
+            description="Conduct comprehensive research on various aspects of novel writing based on the user's requirements.",
+            agent=agent,
+            expected_output="A detailed research report addressing the user's specific novel writing needs.",
+            user_input=user_input,
+        )
+
+    @staticmethod
+    def scenario_development(agent: Any, user_input: str) -> Task:
+        return Task(
+            description="Create and refine storylines, character arcs, and plot structures based on the user's narrative ideas.",
+            agent=agent,
+            expected_output="A well-structured scenario document tailored to the user's story concept.",
+            user_input=user_input,
+        )
+
+    @staticmethod
+    def webtoon_creation(agent: Any, user_input: str) -> Task:
+        return Task(
+            description="Design and produce visual narratives in the webtoon format according to the user's creative vision.",
+            agent=agent,
+            expected_output="A complete webtoon storyboard that brings the user's ideas to life visually.",
+            user_input=user_input,
+        )
+
+tools_orch.py
+# from ..tools.search_tools import SearchTools
+from crewai_tools import DallETool, SerperDevTool
+from pydantic import BaseModel
+from langchain.tools import BaseTool  # BaseTool을 임포트
+
+class Tool(BaseTool):  # BaseTool을 상속받아 Tool 클래스를 정의
+    name: str
+    description: str
+
+    def _run(self, *args, **kwargs):
+        # 여기에 구체적인 구현을 추가합니다.
+        return f"Running tool: {self.name} with args: {args} and kwargs: {kwargs}"
+
+    async def _arun(self, *args, **kwargs):
+        # 여기에 비동기 구현을 추가합니다.
+        return f"Running tool asynchronously: {self.name} with args: {args} and kwargs: {kwargs}"
+
+
+class Tools:
+
+    @staticmethod
+    def internet_search(query: str) -> str:
+        serper_tool = SerperDevTool(
+            country="kr",
+            locale="ko",
+            location="Seoul, Seoul, South Korea",
+            n_results=5
+        )
+        return serper_tool.run(search_query=query)
+    
+    @staticmethod
+    def dalle_image_generation(prompt: str) -> str:
+        dalle_tool = DallETool(model="dall-e-3",
+                                size="1024x1024",
+                                quality="standard",
+                                n=1)
+        return dalle_tool.run(prompt)
+
+
+main2.py
+import asyncio
+import logging
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from langchain_openai import OpenAI
+from pydantic import BaseModel
+from utils.tasks_orch import Tasks, Task
+from utils.agent_orch import AgentRegistry
+from crewai import Crew, Process, Task as CrewTask
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(level=logging.DEBUG, filename='app.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s')
+
+app = FastAPI(debug=True)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+os.environ["OPENAI_API_KEY"] = 
+
+@app.middleware("http")
+async def add_cors_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+@app.options("/agents")
+async def options_agents():
+    return JSONResponse(content={"message": "OK"}, headers={"Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Accept"})
+
+@app.get("/agents")
+def get_agents():
+    agents = AgentRegistry.get_all_agents()
+    logging.debug(f"Registered agents: {agents}")
+    return JSONResponse(content={"agents": agents}, headers={"Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Accept"})
+
+@app.get("/agents/{agent_name}")
+def get_agent_details(agent_name: str):
+    logging.debug(f"Requested agent name: {agent_name}")
+    agent_class = AgentRegistry.get_agent(agent_name)
+    if agent_class:
+        try:
+            agent = agent_class()
+            logging.debug(f"Found agent: {agent_name}")
+            return JSONResponse(
+                content={"name": agent_name, "role": agent.role, "goal": agent.goal, "backstory": agent.backstory},
+                headers={"Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Accept"}
+            )
+        except ValueError as e:
+            logging.error(e)
+            raise HTTPException(status_code=404, detail="에이전트를 찾을 수 없습니다.")
+    else:
+        logging.debug(f"Agent not found: {agent_name}")
+        raise HTTPException(status_code=404, detail="에이전트를 찾을 수 없습니다.")
+
+@app.options("/agents/{agent_name}")
+async def options_agent_details():
+    return JSONResponse(content={"message": "OK"}, headers={"Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Accept"})
+
+@app.options("/execute-crew")
+async def options_execute_crew():
+    return JSONResponse(content={"message": "OK"}, headers={"Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Accept"})
+
+class AgentInput(BaseModel):
+    agent_name: str
+    user_input: str
+    depends_on: Optional[List[str]] = []  
+
+class CrewInput(BaseModel):
+    agents: List[AgentInput]
+    user_input: str
+
+@app.post("/execute-crew")
+async def execute_crew(crew_input: CrewInput):
+    try:
+        agents = []
+        tasks = []
+        
+        for agent_input in crew_input.agents:
+            agent_class = AgentRegistry.get_agent(agent_input.agent_name)
+            if agent_class:
+                agent_instance = agent_class()
+                logging.debug(f"Agent instance created: {agent_instance}")
+                agents.append(agent_instance)
+                
+                task = Tasks.get_task_for_agent(agent_instance, agent_input.user_input)
+                logging.debug(f"Task created: {task}")
+                tasks.append(task)
+            else:
+                raise ValueError(f"Agent not found: {agent_input.agent_name}")
+
+        # 의존성 설정
+        for agent_input in crew_input.agents:
+            if agent_input.depends_on:
+                current_task = next(task for task in tasks if task.agent == agent_instance)
+                dependencies = [next(task for task in tasks if task.agent.__class__.__name__ == dep) for dep in agent_input.depends_on]
+                current_task.set_dependencies(dependencies)
+
+        manager_llm = OpenAI(temperature=0.7)
+
+        crew = Crew(
+            agents=agents,
+            tasks=tasks,
+            verbose=True,
+            process=Process.hierarchical, # sequential, # hierarchical 해보자
+            manager_llm=manager_llm
+        )
+        logging.debug(f"Crew created: {crew}")
+
+        # 비동기 실행을 위한 래퍼 함수
+        async def run_crew():
+            return await crew.kickoff()
+
+        # 이벤트 루프에서 실행
+        result = await run_crew()
+
+        logging.debug(f"Crew result: {result}")
+
+        return JSONResponse(
+            content={"result": result},
+            headers={"Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Accept"}
+        )
+    except Exception as e:
+        logging.error(f"Error in execute_crew: {e}")
+        logging.error(f"Error type: {type(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error occurred while creating crew: {str(e)}")
+    
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
